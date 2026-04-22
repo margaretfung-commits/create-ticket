@@ -65,7 +65,7 @@ app.post("/create-ticket", async (req, res) => {
       },
       {
         headers: {
-          Authorization: Bearer ${process.env.SLACK_BOT_TOKEN},
+          Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
           "Content-Type": "application/json"
         }
       }
