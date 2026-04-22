@@ -21,7 +21,7 @@ app.post("/create-ticket", async (req, res) => {
         ts: thread_ts
       },
       headers: {
-        Authorization: Bearer ${process.env.SLACK_BOT_TOKEN}
+        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`
       }
     });
 
