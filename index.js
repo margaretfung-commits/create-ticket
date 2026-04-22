@@ -1,83 +1,160 @@
 const express = require("express");
 const axios = require("axios");
 require("dotenv").config();
+
 const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+
 const PORT = process.env.PORT || 3000;
-app.post("/create-ticket", async (req, res) => {
-  res.send("Processing..."); // ⚠️ Slack 要即刻回應
-  const { channel_id, thread_ts } = req.body;
+
+// ─── Handle Message Shortcut ───────────────────────────────────────────────
+app.post("/slack/shortcuts", async (req, res) => {
+  // Slack sends payload as URL-encoded string
+  const payload = JSON.parse(req.body.payload);
+
+  // Must acknowledge within 3 seconds
+  res.sendStatus(200);
+
+  // Only handle our specific shortcut
+  if (payload.callback_id !== "create_jira_ticket") return;
+
+  const channelId = payload.channel.id;
+  const threadTs = payload.message.thread_ts || payload.message.ts;
+
   try {
-    // 1. 拉 Slack thread
+    // 1. Grab full thread history
     const threadRes = await axios.get("https://slack.com/api/conversations.replies", {
       params: {
-        channel: channel_id,
-        ts: thread_ts
+        channel: channelId,
+        ts: threadTs,
       },
       headers: {
-        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`
-      }
+        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+      },
     });
-    const messages = threadRes.data.messages.map(m => m.text).join("\n");
-    // 2. AI summary（先 mock）
-    const summary = `Summary of issue:\n${messages.slice(0, 300)}`;
+
+    if (!threadRes.data.ok) {
+      throw new Error(`Slack API error: ${threadRes.data.error}`);
+    }
+
+    const messages = threadRes.data.messages
+      .map((m) => `${m.username || "User"}: ${m.text}`)
+      .join("\n");
+
+    // 2. Use Claude AI to generate title + description
+    const claudeRes = await axios.post(
+      "https://api.anthropic.com/v1/messages",
+      {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        messages: [
+          {
+            role: "user",
+            content: `You are a Jira ticket creator. Based on the following Slack thread conversation, generate a Jira ticket with:
+- A concise title (max 100 characters)
+- A clear description explaining the requirement or issue
+
+Respond in this exact JSON format:
+{
+  "title": "...",
+  "description": "..."
+}
+
+Slack thread:
+${messages}`,
+          },
+        ],
+      },
+      {
+        headers: {
+          "x-api-key": process.env.ANTHROPIC_API_KEY,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    // Parse Claude response
+    const rawText = claudeRes.data.content[0].text;
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("Claude did not return valid JSON");
+    const { title, description } = JSON.parse(jsonMatch[0]);
+
     // 3. Create Jira ticket
     const jiraRes = await axios.post(
       `${process.env.JIRA_BASE_URL}/rest/api/3/issue`,
       {
         fields: {
           project: { key: process.env.JIRA_PROJECT_KEY },
-          summary: summary.substring(0, 100),
-          description: summary,
-          issuetype: { name: "Task" }
-        }
+          summary: title,
+          description: {
+            type: "doc",
+            version: 1,
+            content: [
+              {
+                type: "paragraph",
+                content: [{ type: "text", text: description }],
+              },
+            ],
+          },
+          issuetype: { name: "Task" },
+        },
       },
       {
         auth: {
           username: process.env.JIRA_EMAIL,
-          password: process.env.JIRA_API_TOKEN
+          password: process.env.JIRA_API_TOKEN,
         },
         headers: {
-          "Content-Type": "application/json"
-        }
+          "Content-Type": "application/json",
+        },
       }
     );
+
     const ticketKey = jiraRes.data.key;
     const link = `${process.env.JIRA_BASE_URL}/browse/${ticketKey}`;
-    // 4. 回覆 Slack
+
+    // 4. Reply in Slack thread with ticket link
     await axios.post(
       "https://slack.com/api/chat.postMessage",
       {
-        channel: channel_id,
-        thread_ts: thread_ts,
-        text: `✅ Ticket created: ${ticketKey}\n🔗 ${link}`
+        channel: channelId,
+        thread_ts: threadTs,
+        text: `✅ Jira ticket created!\n*${title}*\n🔗 ${link}`,
       },
       {
         headers: {
           Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
-          "Content-Type": "application/json"
-        }
+          "Content-Type": "application/json",
+        },
       }
     );
   } catch (err) {
-    console.error(err);
+    console.error("Error:", err.response?.data || err.message);
+
     await axios.post(
       "https://slack.com/api/chat.postMessage",
       {
-        channel: req.body.channel_id,
-        thread_ts: req.body.thread_ts,
-        text: "❌ Failed to create ticket"
+        channel: channelId,
+        thread_ts: threadTs,
+        text: `❌ Failed to create ticket: ${err.message}`,
       },
       {
         headers: {
           Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
-          "Content-Type": "application/json"
-        }
+          "Content-Type": "application/json",
+        },
       }
     );
   }
 });
+
+// ─── Health check ──────────────────────────────────────────────────────────
+app.get("/", (req, res) => {
+  res.send("SAP Ticket Bot is running!");
+});
+
 app.listen(PORT, () => {
-  console.log(`Server running on ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
