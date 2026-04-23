@@ -46,19 +46,20 @@ app.post("/slack/shortcuts", async (req, res) => {
     const claudeRes = await axios.post(
       "https://api.anthropic.com/v1/messages",
       {
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-6",
         max_tokens: 1000,
         messages: [
           {
             role: "user",
-            content: `You are a Jira ticket creator. Based on the following Slack thread conversation, generate a Jira ticket with:
-- A concise title (max 100 characters)
-- A clear description explaining the requirement or issue
-
-Respond in this exact JSON format:
+            content: `You are a Jira ticket writer specialising in Feature / Enhancement tickets. Based on the following Slack thread, generate a well-structured Jira ticket.
+ 
+Respond in this exact JSON format with no extra text:
 {
-  "title": "...",
-  "description": "..."
+  "title": "A concise ticket title (max 100 characters)",
+  "background": "Why this feature is needed. What problem or opportunity is being addressed.",
+  "requirements": "A clear list of what needs to be built or changed. Be specific.",
+  "acceptance_criteria": "A list of conditions that must be met for this ticket to be considered done.",
+  "steps_to_reproduce": "If applicable, steps to reproduce the current behaviour or gap. Write N/A if not applicable."
 }
 
 Slack thread:
